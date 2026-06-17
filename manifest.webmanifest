@@ -1,0 +1,33 @@
+{
+  "id": "./Hopmax___Releases.html",
+  "name": "Hopmax Releases",
+  "short_name": "Hopmax",
+  "description": "Release schedule and Spotify pitch spacing planner.",
+  "start_url": "./Hopmax___Releases.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0e0d0b",
+  "background_color": "#0e0d0b",
+  "categories": ["productivity", "music"],
+  "icons": [
+    {
+      "src": "./assets/icons/icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

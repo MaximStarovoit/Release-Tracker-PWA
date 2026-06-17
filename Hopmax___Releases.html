@@ -1,0 +1,1688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.13/html-to-image.min.js" integrity="sha512-iZ2ORl595Wx6miw+GuadDet4WQbdSWS3JLMoNfY8cRGoEFy6oT3G9IbcrBeL6AfkgpA51ETt/faX6yLV+/gFJg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script>
+    (function() {
+      // Keep artifact-specific bridge logic out of standalone browser usage.
+      if (window.parent === window) return;
+
+      const originalConsole = window.console;
+      window.console = {
+        log: (...args) => {
+          originalConsole.log(...args);
+          window.parent.postMessage({ type: 'console', message: args.join(' ') }, '*');
+        },
+        error: (...args) => {
+          originalConsole.error(...args);
+          window.parent.postMessage({ type: 'console', message: 'Error: ' + args.join(' ') }, '*');
+        },
+        warn: (...args) => {
+          originalConsole.warn(...args);
+          window.parent.postMessage({ type: 'console', message: 'Warning: ' + args.join(' ') }, '*');
+        }
+      };
+
+      let requestId = 0;
+      let callbacksMap = new Map();
+      let streamControllers = new Map();
+
+      window.claude = {
+        complete: (prompt) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            callbacksMap.set(id, { resolve, reject });
+            window.parent.postMessage({ type: 'claudeComplete', id, prompt }, '*');
+          });
+        }
+      };
+
+      window.storage = {
+        get: (key, shared = false) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            callbacksMap.set(id, { resolve, reject });
+            window.parent.postMessage({ type: 'storageGet', id, key, shared }, '*');
+          });
+        },
+        set: (key, value, shared = false) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            callbacksMap.set(id, { resolve, reject });
+            window.parent.postMessage({ type: 'storageSet', id, key, value, shared }, '*');
+          });
+        },
+        delete: (key, shared = false) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            callbacksMap.set(id, { resolve, reject });
+            window.parent.postMessage({ type: 'storageDelete', id, key, shared }, '*');
+          });
+        },
+        list: (prefix, shared = false) => {
+          return new Promise((resolve, reject) => {
+            const id = requestId++;
+            callbacksMap.set(id, { resolve, reject });
+            window.parent.postMessage({ type: 'storageList', id, prefix, shared }, '*');
+          });
+        }
+      };
+
+      let pendingBlobs = new Map();
+      URL.createObjectURL = (blob) => {
+        const blobId = `blob-${Date.now()}-${Math.random()}`;
+        pendingBlobs.set(blobId, blob);
+        return `blob-request://${blobId}`;
+      };
+
+      URL.revokeObjectURL = (url) => {
+        const blobId = url.replace("blob-request://", "");
+        pendingBlobs.delete(blobId);
+      };
+
+      const getBlobFromURL = (url) => {
+        const blobId = url.replace("blob-request://", "");
+        return pendingBlobs.get(blobId);
+      };
+
+      window.fetch = (url, init = {}) => {
+        return new Promise((resolve, reject) => {
+          const id = requestId++;
+          const channelId = `fetch-${id}-${Date.now()}`;
+          callbacksMap.set(id, {
+            resolve: (response) => {
+              const stream = new ReadableStream({
+                start(controller) { streamControllers.set(channelId, controller); },
+                cancel() { streamControllers.delete(channelId); }
+              });
+              resolve(new Response(stream, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers
+              }));
+            },
+            reject,
+            channelId
+          });
+          window.parent.postMessage({ type: 'proxyFetch', id, url, init, channelId }, '*');
+        });
+      };
+
+      window.addEventListener('message', async (event) => {
+        if (event.source !== window.parent || !event.data || typeof event.data.type !== 'string') return;
+        if (event.data.type === 'takeScreenshot') {
+          const rootElement = document.getElementById('artifacts-component-root-html');
+          if (!rootElement) {
+            window.parent.postMessage({ type: 'screenshotError', error: 'Root element not found' }, '*');
+            return;
+          }
+          try {
+            const screenshot = await htmlToImage.toPng(rootElement, {
+              imagePlaceholder: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAAAA1JREFUGFdjePDgwX8ACOQDoNsk0PMAAAAASUVORK5CYII=",
+            });
+            window.parent.postMessage({ type: 'screenshotData', data: screenshot }, '*');
+          } catch (error) {
+            window.parent.postMessage({ type: 'screenshotError', error: error?.message || String(error) }, '*');
+          }
+        } else if (event.data.type === 'claudeComplete') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) { callback.reject(new Error(event.data.error)); }
+          else { callback.resolve(event.data.completion); }
+          callbacksMap.delete(event.data.id);
+        } else if (event.data.type === 'proxyFetchResponse') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) {
+            callback.reject(new Error(event.data.error));
+            callbacksMap.delete(event.data.id);
+          } else {
+            callback.resolve({ status: event.data.status, statusText: event.data.statusText, headers: event.data.headers });
+            if (!event.data.body) callbacksMap.delete(event.data.id);
+          }
+        } else if (event.data.type === 'proxyFetchStream') {
+          const controller = streamControllers.get(event.data.channelId);
+          if (controller) {
+            if (event.data.error) {
+              controller.error(new Error(event.data.error));
+              streamControllers.delete(event.data.channelId);
+            } else if (event.data.done) {
+              controller.close();
+              streamControllers.delete(event.data.channelId);
+              const callback = Array.from(callbacksMap.entries()).find(([_, v]) => v.channelId === event.data.channelId);
+              if (callback) callbacksMap.delete(callback[0]);
+            } else if (event.data.chunk) {
+              controller.enqueue(new Uint8Array(event.data.chunk));
+            }
+          }
+        } else if (event.data.type === 'storageGet') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) { callback.reject(new Error(event.data.error)); }
+          else { callback.resolve(event.data.result); }
+          callbacksMap.delete(event.data.id);
+        } else if (event.data.type === 'storageSet') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) { callback.reject(new Error(event.data.error)); }
+          else { callback.resolve(event.data.result); }
+          callbacksMap.delete(event.data.id);
+        } else if (event.data.type === 'storageDelete') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) { callback.reject(new Error(event.data.error)); }
+          else { callback.resolve(event.data.result); }
+          callbacksMap.delete(event.data.id);
+        } else if (event.data.type === 'storageList') {
+          const callback = callbacksMap.get(event.data.id);
+          if (!callback) return;
+          if (event.data.error) { callback.reject(new Error(event.data.error)); }
+          else { callback.resolve(event.data.result); }
+          callbacksMap.delete(event.data.id);
+        }
+      });
+
+      window.addEventListener('click', (event) => {
+        const isEl = event.target instanceof HTMLElement;
+        if (!isEl) return;
+        const linkEl = event.target.closest("a");
+        if (!linkEl || !linkEl.href) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (linkEl.href.startsWith("blob-request:")) {
+          const blob = getBlobFromURL(linkEl.href);
+          if (!blob) return;
+          void blob.arrayBuffer().then((data) => {
+            window.parent.postMessage({ type: "downloadFile", filename: linkEl.download, data, mimeType: blob.type || "application/octet-stream" });
+          });
+        } else if (linkEl.href.startsWith("data:")) {
+          const [header, base64Data] = linkEl.href.split(",");
+          const mimeMatch = header.match(/data:([^;]+)/);
+          const mimeType = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+          const binaryString = atob(base64Data);
+          const data = Uint8Array.from(binaryString, (c) => c.charCodeAt(0)).buffer;
+          window.parent.postMessage({ type: "downloadFile", filename: linkEl.download, data, mimeType });
+        } else {
+          let linkUrl;
+          try { linkUrl = new URL(linkEl.href); } catch (error) { return; }
+          if (linkUrl.hostname === window.location.hostname) return;
+          window.parent.postMessage({ type: 'openExternal', href: linkEl.href }, '*');
+        }
+      });
+
+      window.open = function(url) {
+        window.parent.postMessage({ type: "openExternal", href: url }, "*");
+      };
+
+      window.addEventListener('error', (event) => {
+        window.parent.postMessage({ type: 'console', message: 'Uncaught Error: ' + event.message }, '*');
+      });
+    })();
+  </script>
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Hopmax release schedule and Spotify pitch spacing planner.">
+  <meta name="theme-color" content="#0e0d0b">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Hopmax">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Hopmax — Releases</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./assets/icons/icon-180.png">
+  <link rel="icon" id="favicon" type="image/png" href="./assets/icons/icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./assets/icons/icon-192.png">
+  <script>
+    (function(){
+      const c = document.createElement('canvas'); c.width = c.height = 64;
+      const ctx = c.getContext('2d'), cx = 32, cy = 32;
+      const g = ctx.createRadialGradient(26, 22, 2, cx, cy, 32);
+      g.addColorStop(0, '#4a4a4a'); g.addColorStop(1, '#111');
+      ctx.beginPath(); ctx.arc(cx, cy, 32, 0, Math.PI*2); ctx.fillStyle = g; ctx.fill();
+      [28, 24, 20, 16].forEach(r => {
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1; ctx.stroke();
+      });
+      ctx.beginPath(); ctx.arc(cx, cy, 11, 0, Math.PI*2); ctx.fillStyle = '#1a1a1a'; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI*2);
+      ctx.strokeStyle = '#2d9e6b'; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2); ctx.fillStyle = '#0d0e0f'; ctx.fill();
+      ctx.beginPath(); ctx.ellipse(22, 18, 8, 4, Math.PI*-0.3, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fill();
+      document.getElementById('favicon').href = c.toDataURL('image/png');
+    })();
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0e0d0b; --surface: #181611; --surface2: #211f19;
+      --border: #2a2720; --border-light: #3d3a30;
+      --text: #ede8dc; --muted: #7a7060;
+      --accent: #2d9e6b; --before: #e08c3a; --after: #c4a96b; --open: #58a6d6;
+      --danger: #e05555;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; min-height: 100vh; }
+
+    /* grain overlay */
+    body::before {
+      content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 999;
+      opacity: 0.035;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      background-size: 180px 180px;
+    }
+
+    header { padding: 24px 36px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .today-badge { font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 5px; padding: 5px 12px; letter-spacing: 0.04em; }
+    .today-badge b { color: var(--text); font-weight: 500; }
+
+    .btn { font-family: 'DM Mono', monospace; font-size: 12px; padding: 7px 16px; border-radius: 6px; cursor: pointer; letter-spacing: 0.04em; transition: all 0.15s; border: 1px solid var(--border-light); display: inline-flex; align-items: center; gap: 6px; }
+    .btn-ghost { background: transparent; color: var(--muted); }
+    .btn-ghost:hover { color: var(--text); background: var(--surface2); border-color: var(--border-light); }
+    .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn:focus-visible,
+    .lang-select:focus-visible,
+    .status-sel:focus-visible,
+    .inp:focus-visible,
+    .del:focus-visible,
+    .toast-undo:focus-visible {
+      outline: 2px solid rgba(45,158,107,0.75);
+      outline-offset: 2px;
+    }
+
+    .hint { margin: 14px 36px; padding: 9px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; color: var(--muted); display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+    .hint-item { display: flex; align-items: center; gap: 6px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+    .wrap { overflow-x: auto; padding: 0 36px 48px; margin-top: 8px; }
+    table { width: 100%; min-width: 900px; border-collapse: collapse; }
+    thead th { padding: 12px 14px; text-align: left; font-size: 10px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); white-space: nowrap; }
+    thead th.th-before { color: var(--before); opacity: 0.9; }
+    thead th.th-after  { color: var(--after);  opacity: 0.9; }
+
+    tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+    tbody tr:hover { background: var(--surface); }
+    tbody tr.is-past { opacity: 0.5; }
+    tbody tr.status-released { opacity: 0.48; }
+    tbody tr.status-released:hover { opacity: 0.72; }
+    tbody tr.status-waiting input[data-field="track"],
+    tbody tr.status-waiting input[type="date"] { color: #fff7e8; font-weight: 600; }
+    tbody tr.is-conflict { background: rgba(224,85,85,0.04); }
+    tbody tr.is-conflict td:first-child { border-left: 2px solid var(--danger); }
+    tbody tr.is-conflict:hover { background: rgba(224,85,85,0.07); }
+
+    /* tint columns −7/+7 */
+    td.col-before { background: rgba(224,140,58,0.04); }
+    td.col-after  { background: rgba(196,169,107,0.04); }
+    tr:hover td.col-before { background: rgba(224,140,58,0.07); }
+    tr:hover td.col-after  { background: rgba(196,169,107,0.07); }
+
+    td { padding: 0 14px; height: 50px; vertical-align: middle; font-size: 13px; }
+
+    .col-month { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 500; }
+
+    .inp { background: transparent; border: none; color: var(--text); font-family: 'DM Mono', monospace; font-size: 13px; width: 100%; outline: none; padding: 3px 0; cursor: pointer; }
+    .inp:focus { background: var(--surface2); border-radius: 4px; padding: 3px 8px; margin: 0 -8px; width: calc(100% + 16px); box-shadow: 0 0 0 1px var(--border-light); cursor: text; }
+    .inp::placeholder { color: var(--border-light); font-style: italic; }
+    input[type="date"].inp::-webkit-calendar-picker-indicator { filter: invert(0.35); cursor: pointer; }
+
+    .status-sel { appearance: none; border: none; font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 4px; cursor: pointer; outline: none; letter-spacing: 0.03em; }
+    .s-released { background: rgba(45,158,107,0.15); color: #2d9e6b; border: 1px solid rgba(45,158,107,0.3); }
+    .s-waiting  { background: rgba(224,140,58,0.15); color: #e08c3a; border: 1px solid rgba(224,140,58,0.3); }
+    .s-draft    { background: var(--surface2); color: var(--muted); border: 1px solid var(--border-light); }
+
+    .comp-empty   { color: var(--border-light); font-style: italic; font-size: 11px; }
+    .comp-blocked { color: var(--danger); font-size: 11px; opacity: 0.7; }
+    .slot-select {
+      width: 100%;
+      max-width: 230px;
+      background: rgba(88,166,214,0.08);
+      color: var(--open);
+      border: 1px solid rgba(88,166,214,0.24);
+      border-radius: 5px;
+      padding: 5px 24px 5px 8px;
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2358a6d6' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+    }
+    .slot-select:focus-visible { outline: 2px solid rgba(88,166,214,0.65); outline-offset: 2px; }
+    .slot-select option { background: var(--surface2); color: var(--text); }
+
+    .del { background: none; border: none; color: var(--border-light); cursor: pointer; font-size: 18px; padding: 4px 8px; border-radius: 4px; transition: all 0.15s; line-height: 1; }
+    .del:hover { color: var(--danger); background: rgba(224,85,85,0.1); }
+    .empty-row td { text-align: center; padding: 40px; color: var(--border-light); font-style: italic; font-size: 12px; }
+
+    /* vinyl */
+    .vinyl-wrap { position: relative; width: 36px; height: 36px; flex-shrink: 0; }
+    .vinyl { width: 36px; height: 36px; border-radius: 50%; animation: spin 6s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .vinyl-shine { position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(ellipse at 35% 30%, rgba(255,255,255,0.08) 0%, transparent 60%); pointer-events: none; }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* lang switcher */
+    .lang-switcher { display: flex; align-items: center; }
+    .lang-select { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-family: 'DM Mono', monospace; font-size: 12px; color: var(--text); cursor: pointer; outline: none; transition: border-color 0.15s; appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237a7060' stroke-width='1.3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 26px; }
+    .lang-select:hover { border-color: var(--border-light); }
+    .lang-select:focus { border-color: var(--accent); }
+    .lang-select option { background: var(--surface2); color: var(--text); }
+
+    .free-date-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px 4px 10px;
+    }
+    .free-date-control label {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .free-date-copy { display: flex; flex-direction: column; gap: 1px; min-width: 166px; }
+    .next-free { color: var(--open); font-size: 10px; line-height: 1.2; white-space: nowrap; }
+
+    .view-tabs {
+      margin: 0 36px 12px;
+      display: inline-flex;
+      gap: 2px;
+      padding: 3px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+    }
+    .view-tab {
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      padding: 6px 11px;
+      cursor: pointer;
+    }
+    .view-tab:hover { color: var(--text); background: var(--surface2); }
+    .view-tab.is-active { color: #fff; background: rgba(45,158,107,0.22); box-shadow: inset 0 0 0 1px rgba(45,158,107,0.35); }
+    .view-tab:focus-visible { outline: 2px solid rgba(45,158,107,0.75); outline-offset: 2px; }
+
+    /* stats badges */
+    .stats { display: flex; align-items: center; gap: 8px; }
+    .stat-badge { font-size: 10px; font-family: 'DM Mono', monospace; padding: 3px 9px; border-radius: 4px; letter-spacing: 0.05em; font-weight: 500; }
+    .stat-total    { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+    .stat-waiting  { background: rgba(224,140,58,0.12); color: #e08c3a; border: 1px solid rgba(224,140,58,0.25); }
+    .stat-conflict { background: rgba(224,85,85,0.12); color: var(--danger); border: 1px solid rgba(224,85,85,0.25); }
+
+    /* undo toast */
+    .toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(16px);
+      background: var(--surface2); border: 1px solid var(--border-light); border-radius: 8px;
+      padding: 10px 16px; font-size: 12px; color: var(--text); display: flex; align-items: center; gap: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5); opacity: 0; pointer-events: none;
+      transition: opacity 0.2s, transform 0.2s; z-index: 1000; white-space: nowrap;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+    .toast-undo { background: none; border: 1px solid var(--border-light); color: var(--accent); font-family: 'DM Mono', monospace; font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer; letter-spacing: 0.04em; }
+    .toast-undo:hover { background: rgba(45,158,107,0.1); }
+    .toast.is-passive .toast-undo { display: none; }
+
+    /* reset button */
+    .btn-danger { background: transparent; color: var(--danger); border-color: rgba(224,85,85,0.3); }
+    .btn-danger:hover { background: rgba(224,85,85,0.1); border-color: var(--danger); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 980px) {
+      header { padding: 18px 20px 14px; align-items: flex-start; }
+      .header-right { width: 100%; justify-content: flex-start; }
+      .hint { margin: 12px 20px; gap: 12px; }
+      .view-tabs { margin: 0 20px 12px; }
+      .wrap { padding: 0 20px 32px; }
+    }
+
+    @media (max-width: 640px) {
+      .lang-switcher,
+      .free-date-control,
+      .today-badge,
+      .stats,
+      .header-right > .btn { flex: 1 1 auto; }
+      .free-date-control { justify-content: space-between; flex-wrap: wrap; }
+      .free-date-copy { min-width: 100%; }
+      .free-date-control .slot-select { max-width: none; }
+      .view-tabs { display: flex; overflow-x: auto; }
+      .view-tab { flex: 1 0 auto; }
+      .stats { flex-wrap: wrap; }
+      .header-right > .btn { justify-content: center; }
+      table { min-width: 780px; }
+      td { height: 46px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .vinyl { animation: none; }
+      .btn,
+      tbody tr,
+      .toast,
+      .del,
+      .lang-select { transition: none; }
+    }
+  </style>
+</head>
+<body id="artifacts-component-root-html">
+
+<header>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="vinyl-wrap">
+      <svg class="vinyl" viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="vg" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#3a3530"/>
+            <stop offset="100%" stop-color="#111008"/>
+          </radialGradient>
+        </defs>
+        <circle cx="18" cy="18" r="18" fill="url(#vg)"/>
+        <circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+        <circle cx="18" cy="18" r="12.5" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+        <circle cx="18" cy="18" r="9.5"  fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+        <circle cx="18" cy="18" r="7" fill="#1a1812"/>
+        <circle cx="18" cy="18" r="5.5" fill="none" stroke="#2d9e6b" stroke-width="1.5"/>
+        <circle cx="18" cy="18" r="2.5" fill="#0e0d0b"/>
+      </svg>
+      <div class="vinyl-shine"></div>
+    </div>
+    <div class="logo">Hopmax<span>.</span></div>
+  </div>
+  <div class="header-right">
+    <div class="lang-switcher">
+      <label class="sr-only" id="langSelectLabel" for="langSelect">Language</label>
+      <select class="lang-select" id="langSelect" aria-labelledby="langSelectLabel">
+        <option value="en">🇬🇧 English</option>
+        <option value="uk">🇺🇦 Українська</option>
+        <option value="de">🇩🇪 Deutsch</option>
+        <option value="es">🇪🇸 Español</option>
+        <option value="fr">🇫🇷 Français</option>
+      </select>
+    </div>
+    <div class="today-badge"><span id="todayPrefix"></span><b id="todayLabel"></b></div>
+    <div class="free-date-control">
+      <div class="free-date-copy">
+        <label id="freeDateLabel" for="freeDateSelect">Free dates</label>
+        <span class="next-free" id="nextFreeLabel"></span>
+      </div>
+      <select class="slot-select" id="freeDateSelect" aria-labelledby="freeDateLabel"></select>
+    </div>
+    <div class="stats">
+      <span class="stat-badge stat-total" id="statTotal"></span>
+      <span class="stat-badge stat-waiting" id="statWaiting" style="display:none"></span>
+      <span class="stat-badge stat-conflict" id="statConflict" style="display:none"></span>
+    </div>
+    <button id="btnReset" type="button" class="btn btn-ghost btn-danger">↺ Reset</button>
+    <button id="btnExportCSV" type="button" class="btn btn-ghost">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <path d="M6 1v7M3 5.5l3 3 3-3M1 10h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg> CSV
+    </button>
+    <button id="btnAdd" type="button" class="btn btn-primary">+ Add Release</button>
+  </div>
+</header>
+
+  <div class="hint">
+  <div class="hint-item"><div class="dot" style="background:var(--before)"></div><span data-hint="before">nearest free slot before release</span></div>
+  <div class="hint-item"><div class="dot" style="background:var(--after)"></div><span data-hint="after">nearest free slot after release</span></div>
+  <div class="hint-item"><div class="dot" style="background:var(--open)"></div><span data-hint="open">pick a synced free date from today</span></div>
+  <div class="hint-item"><div class="dot" style="background:var(--danger)"></div><span data-hint="conflict">conflict — releases too close together</span></div>
+</div>
+
+<div class="view-tabs" role="tablist" aria-label="Release view">
+  <button type="button" class="view-tab" data-filter="all" aria-pressed="false">All</button>
+  <button type="button" class="view-tab is-active" data-filter="waiting" aria-pressed="true">Waiting</button>
+  <button type="button" class="view-tab" data-filter="released" aria-pressed="false">Released</button>
+  <button type="button" class="view-tab" data-filter="conflict" aria-pressed="false">Conflicts</button>
+</div>
+
+<div class="wrap">
+  <table>
+    <caption class="sr-only" id="tableCaption">Release schedule</caption>
+    <thead>
+      <tr>
+        <th scope="col" data-col="month">Month</th>
+        <th scope="col" data-col="track">Track Name</th>
+        <th scope="col" data-col="label">Label</th>
+        <th scope="col" data-col="date">Release Date</th>
+        <th scope="col" data-col="status">Status</th>
+        <th scope="col" class="th-before" data-col="before">− 7 days</th>
+        <th scope="col" class="th-after"  data-col="after">+ 7 days</th>
+        <th scope="col"></th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+<div class="toast" id="undoToast">
+  <span id="undoMsg">Track deleted</span>
+  <button id="undoBtn" type="button" class="toast-undo">Undo</button>
+</div>
+
+<script>
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+// ── i18n ──────────────────────────────────────────────────────────────────────
+function pluralUk(n, one, few, many) {
+  const mod10 = n % 10, mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} ${one}`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${n} ${few}`;
+  return `${n} ${many}`;
+}
+
+const LANGS = {
+  en: {
+    today:        'Today:',
+    langLabel:    'Interface language',
+    tableCaption: 'Release schedule and spacing planner',
+    reset:        '↺ Reset',
+    addRelease:   '+ Add Release',
+    hintBefore:   'nearest free slot before release',
+    hintAfter:    'nearest free slot after release',
+    hintOpen:     'pick a synced free date from today',
+    hintConflict: 'conflict — releases too close together',
+    colMonth:     'Month',
+    colTrack:     'Track Name',
+    colLabel:     'Label',
+    colDate:      'Release Date',
+    colStatus:    'Status',
+    colBefore:    '− 7 days',
+    colAfter:     '+ 7 days',
+    colOpen:      'Free dates',
+    pickFreeDate: 'Choose free date…',
+    noFreeDates:  'No free dates',
+    noFilterResults:'No releases in this view',
+    nextFree:     'Next',
+    filterAll:    'All',
+    filterWaiting:'Waiting',
+    filterReleased:'Released',
+    filterConflict:'Conflicts',
+    placeholderTrack: 'Track name…',
+    placeholderLabel: 'Label…',
+    statusReleased: 'Released',
+    statusWaiting:  'Waiting',
+    statusDraft:    'Draft',
+    noSlots:      '—',
+    noReleases:   'No releases yet — click "+ Add Release"',
+    statWaiting:  (n) => `${n} waiting`,
+    statConflict: (n) => `${n} conflict${n !== 1 ? 's' : ''}`,
+    statTotal:    (n) => `${n} release${n !== 1 ? 's' : ''}`,
+    deleted:      (t) => `"${t}" deleted`,
+    deleteRelease:(t) => t ? `Delete release: ${t}` : 'Delete release',
+    weekendBlocked:'Release date cannot be on Saturday or Sunday',
+    untitled:     'Untitled',
+    undoBtn:      'Undo',
+    resetConfirm: 'Reset all data to defaults? This will discard all your changes.',
+    monthLocale:  'en-US',
+  },
+  uk: {
+    today:        'Сьогодні:',
+    langLabel:    'Мова інтерфейсу',
+    tableCaption: 'План релізів і відступів між датами',
+    reset:        '↺ Скинути',
+    addRelease:   '+ Додати реліз',
+    hintBefore:   'найближчий вільний слот до релізу',
+    hintAfter:    'найближчий вільний слот після релізу',
+    hintOpen:     'оберіть синхронізовану вільну дату від сьогодні',
+    hintConflict: 'конфлікт — релізи надто близько',
+    colMonth:     'Місяць',
+    colTrack:     'Назва треку',
+    colLabel:     'Лейбл',
+    colDate:      'Дата релізу',
+    colStatus:    'Статус',
+    colBefore:    '− 7 днів',
+    colAfter:     '+ 7 днів',
+    colOpen:      'Вільні дати',
+    pickFreeDate: 'Оберіть вільну дату…',
+    noFreeDates:  'Немає вільних дат',
+    noFilterResults:'У цьому вигляді немає релізів',
+    nextFree:     'Наступна',
+    filterAll:    'Усі',
+    filterWaiting:'Очікують',
+    filterReleased:'Випущені',
+    filterConflict:'Конфлікти',
+    placeholderTrack: 'Назва треку…',
+    placeholderLabel: 'Лейбл…',
+    statusReleased: 'Випущено',
+    statusWaiting:  'Очікує',
+    statusDraft:    'Чернетка',
+    noSlots:      '—',
+    noReleases:   'Ще немає релізів — натисніть "+ Додати реліз"',
+    statWaiting:  (n) => pluralUk(n, 'очікує', 'очікують', 'очікують'),
+    statConflict: (n) => pluralUk(n, 'конфлікт', 'конфлікти', 'конфліктів'),
+    statTotal:    (n) => pluralUk(n, 'реліз', 'релізи', 'релізів'),
+    deleted:      (t) => `«${t}» видалено`,
+    deleteRelease:(t) => t ? `Видалити реліз: ${t}` : 'Видалити реліз',
+    weekendBlocked:'Дата релізу не може бути в суботу або неділю',
+    untitled:     'Без назви',
+    undoBtn:      'Скасувати',
+    resetConfirm: 'Скинути всі дані до початкових? Усі зміни буде втрачено.',
+    monthLocale:  'uk-UA',
+  },
+  de: {
+    today:        'Heute:',
+    langLabel:    'Sprache der Benutzeroberfläche',
+    tableCaption: 'Release-Planer mit Abständen zwischen Terminen',
+    reset:        '↺ Zurücksetzen',
+    addRelease:   '+ Release hinzufügen',
+    hintBefore:   'nächster freier Slot vor dem Release',
+    hintAfter:    'nächster freier Slot nach dem Release',
+    hintOpen:     'synchronisierten freien Termin ab heute wählen',
+    hintConflict: 'Konflikt — Releases zu nah beieinander',
+    colMonth:     'Monat',
+    colTrack:     'Trackname',
+    colLabel:     'Label',
+    colDate:      'Release-Datum',
+    colStatus:    'Status',
+    colBefore:    '− 7 Tage',
+    colAfter:     '+ 7 Tage',
+    colOpen:      'Freie Termine',
+    pickFreeDate: 'Freien Termin wählen…',
+    noFreeDates:  'Keine freien Termine',
+    noFilterResults:'Keine Releases in dieser Ansicht',
+    nextFree:     'Nächster',
+    filterAll:    'Alle',
+    filterWaiting:'Wartend',
+    filterReleased:'Veröffentlicht',
+    filterConflict:'Konflikte',
+    placeholderTrack: 'Trackname…',
+    placeholderLabel: 'Label…',
+    statusReleased: 'Veröffentlicht',
+    statusWaiting:  'Wartend',
+    statusDraft:    'Entwurf',
+    noSlots:      '—',
+    noReleases:   'Noch keine Releases — klicken Sie auf "+ Release hinzufügen"',
+    statWaiting:  (n) => `${n} wartend`,
+    statConflict: (n) => `${n} Konflikt${n !== 1 ? 'e' : ''}`,
+    statTotal:    (n) => `${n} Release${n !== 1 ? 's' : ''}`,
+    deleted:      (t) => `„${t}" gelöscht`,
+    deleteRelease:(t) => t ? `Release löschen: ${t}` : 'Release löschen',
+    weekendBlocked:'Das Release-Datum darf nicht auf Samstag oder Sonntag fallen',
+    untitled:     'Ohne Titel',
+    undoBtn:      'Rückgängig',
+    resetConfirm: 'Alle Daten zurücksetzen? Alle Änderungen gehen verloren.',
+    monthLocale:  'de-DE',
+  },
+  es: {
+    today:        'Hoy:',
+    langLabel:    'Idioma de la interfaz',
+    tableCaption: 'Planificador de lanzamientos y separación entre fechas',
+    reset:        '↺ Restablecer',
+    addRelease:   '+ Añadir lanzamiento',
+    hintBefore:   'siguiente hueco libre antes del lanzamiento',
+    hintAfter:    'siguiente hueco libre después del lanzamiento',
+    hintOpen:     'elige una fecha libre sincronizada desde hoy',
+    hintConflict: 'conflicto — lanzamientos demasiado cercanos',
+    colMonth:     'Mes',
+    colTrack:     'Nombre del track',
+    colLabel:     'Sello',
+    colDate:      'Fecha de lanzamiento',
+    colStatus:    'Estado',
+    colBefore:    '− 7 días',
+    colAfter:     '+ 7 días',
+    colOpen:      'Fechas libres',
+    pickFreeDate: 'Elige fecha libre…',
+    noFreeDates:  'Sin fechas libres',
+    noFilterResults:'Sin lanzamientos en esta vista',
+    nextFree:     'Siguiente',
+    filterAll:    'Todo',
+    filterWaiting:'En espera',
+    filterReleased:'Publicado',
+    filterConflict:'Conflictos',
+    placeholderTrack: 'Nombre del track…',
+    placeholderLabel: 'Sello…',
+    statusReleased: 'Publicado',
+    statusWaiting:  'En espera',
+    statusDraft:    'Borrador',
+    noSlots:      '—',
+    noReleases:   'Sin lanzamientos — haz clic en "+ Añadir lanzamiento"',
+    statWaiting:  (n) => `${n} en espera`,
+    statConflict: (n) => `${n} conflicto${n !== 1 ? 's' : ''}`,
+    statTotal:    (n) => `${n} lanzamiento${n !== 1 ? 's' : ''}`,
+    deleted:      (t) => `«${t}» eliminado`,
+    deleteRelease:(t) => t ? `Eliminar lanzamiento: ${t}` : 'Eliminar lanzamiento',
+    weekendBlocked:'La fecha de lanzamiento no puede caer en sábado o domingo',
+    untitled:     'Sin título',
+    undoBtn:      'Deshacer',
+    resetConfirm: '¿Restablecer todos los datos? Se perderán todos los cambios.',
+    monthLocale:  'es-ES',
+  },
+  fr: {
+    today:        'Aujourd\'hui :',
+    langLabel:    'Langue de l’interface',
+    tableCaption: 'Planificateur de sorties et d’espacement des dates',
+    reset:        '↺ Réinitialiser',
+    addRelease:   '+ Ajouter une sortie',
+    hintBefore:   'prochain créneau libre avant la sortie',
+    hintAfter:    'prochain créneau libre après la sortie',
+    hintOpen:     'choisir une date libre synchronisée dès aujourd’hui',
+    hintConflict: 'conflit — sorties trop rapprochées',
+    colMonth:     'Mois',
+    colTrack:     'Nom du titre',
+    colLabel:     'Label',
+    colDate:      'Date de sortie',
+    colStatus:    'Statut',
+    colBefore:    '− 7 jours',
+    colAfter:     '+ 7 jours',
+    colOpen:      'Dates libres',
+    pickFreeDate: 'Choisir une date libre…',
+    noFreeDates:  'Aucune date libre',
+    noFilterResults:'Aucune sortie dans cette vue',
+    nextFree:     'Prochaine',
+    filterAll:    'Tout',
+    filterWaiting:'En attente',
+    filterReleased:'Sortis',
+    filterConflict:'Conflits',
+    placeholderTrack: 'Nom du titre…',
+    placeholderLabel: 'Label…',
+    statusReleased: 'Sorti',
+    statusWaiting:  'En attente',
+    statusDraft:    'Brouillon',
+    noSlots:      '—',
+    noReleases:   'Pas encore de sorties — cliquez sur "+ Ajouter une sortie"',
+    statWaiting:  (n) => `${n} en attente`,
+    statConflict: (n) => `${n} conflit${n !== 1 ? 's' : ''}`,
+    statTotal:    (n) => `${n} sortie${n !== 1 ? 's' : ''}`,
+    deleted:      (t) => `«${t}» supprimé`,
+    deleteRelease:(t) => t ? `Supprimer la sortie : ${t}` : 'Supprimer la sortie',
+    weekendBlocked:'La date de sortie ne peut pas tomber un samedi ou un dimanche',
+    untitled:     'Sans titre',
+    undoBtn:      'Annuler',
+    resetConfirm: 'Réinitialiser toutes les données ? Toutes les modifications seront perdues.',
+    monthLocale:  'fr-FR',
+  },
+};
+
+const LANG_KEY = 'hopmax_lang';
+const FALLBACK_LANG = 'en';
+const DEFAULT_FILTER = 'waiting';
+const STATUS_VALUES = new Set(['released', 'waiting', 'draft']);
+const FILTER_VALUES = new Set(['all', 'waiting', 'released', 'conflict']);
+
+function hasHostStorage() {
+  return !!window.storage && typeof window.storage.get === 'function' && typeof window.storage.set === 'function';
+}
+
+function readLocalStorage(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+function writeLocalStorage(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) { console.warn('hopmax: localStorage unavailable', e); }
+}
+
+async function readStorage(key) {
+  const localValue = readLocalStorage(key);
+  if (!hasHostStorage()) return localValue;
+
+  try {
+    const hostValue = await window.storage.get(key);
+    if (typeof hostValue === 'string') {
+      if (hostValue !== localValue) writeLocalStorage(key, hostValue);
+      return hostValue;
+    }
+    if (hostValue == null && localValue !== null) {
+      await window.storage.set(key, localValue);
+    }
+  } catch (e) {
+    console.warn('hopmax: host storage unavailable', e);
+  }
+
+  return localValue;
+}
+
+function writeStorage(key, value) {
+  writeLocalStorage(key, value);
+  if (!hasHostStorage()) return;
+  void window.storage.set(key, value).catch((e) => {
+    console.warn('hopmax: failed to write host storage', e);
+  });
+}
+
+function normalizeLang(value) {
+  return Object.prototype.hasOwnProperty.call(LANGS, value) ? value : FALLBACK_LANG;
+}
+
+function normalizeFilter(value) {
+  return FILTER_VALUES.has(value) ? value : DEFAULT_FILTER;
+}
+
+function t() { return LANGS[normalizeLang(lang)]; }
+
+let lang = normalizeLang(readLocalStorage(LANG_KEY));
+let currentFilter = DEFAULT_FILTER;
+
+function setLang(l) {
+  lang = normalizeLang(l);
+  writeStorage(LANG_KEY, lang);
+  document.getElementById('langSelect').value = lang;
+  applyLang();
+  render();
+}
+
+function updateFilterTabs(dict = t()) {
+  const labels = {
+    all: dict.filterAll,
+    waiting: dict.filterWaiting,
+    released: dict.filterReleased,
+    conflict: dict.filterConflict,
+  };
+
+  document.querySelectorAll('[data-filter]').forEach((button) => {
+    const filter = normalizeFilter(button.dataset.filter);
+    button.textContent = labels[filter];
+    button.classList.toggle('is-active', filter === currentFilter);
+    button.setAttribute('aria-pressed', String(filter === currentFilter));
+  });
+}
+
+function setFilter(filter) {
+  currentFilter = normalizeFilter(filter);
+  updateFilterTabs();
+  render();
+}
+
+function applyLang() {
+  const s = t();
+  document.documentElement.lang = lang;
+  document.getElementById('langSelectLabel').textContent = s.langLabel;
+  document.getElementById('tableCaption').textContent = s.tableCaption;
+  document.getElementById('todayPrefix').textContent = s.today + ' ';
+  document.getElementById('freeDateLabel').textContent = s.colOpen;
+  document.getElementById('btnReset').textContent    = s.reset;
+  document.getElementById('btnAdd').textContent      = s.addRelease;
+
+  document.querySelector('[data-hint="before"]').textContent   = s.hintBefore;
+  document.querySelector('[data-hint="after"]').textContent    = s.hintAfter;
+  document.querySelector('[data-hint="open"]').textContent     = s.hintOpen;
+  document.querySelector('[data-hint="conflict"]').textContent = s.hintConflict;
+
+  document.querySelector('[data-col="month"]').textContent  = s.colMonth;
+  document.querySelector('[data-col="track"]').textContent  = s.colTrack;
+  document.querySelector('[data-col="label"]').textContent  = s.colLabel;
+  document.querySelector('[data-col="date"]').textContent   = s.colDate;
+  document.querySelector('[data-col="status"]').textContent = s.colStatus;
+  document.querySelector('[data-col="before"]').textContent = s.colBefore;
+  document.querySelector('[data-col="after"]').textContent  = s.colAfter;
+
+  document.getElementById('undoBtn').textContent = s.undoBtn;
+  updateFilterTabs(s);
+}
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+const KEY = 'hopmax_v6';
+const BACKUP_KEY = `${KEY}_backup`;
+const STORAGE_VERSION = 7;
+const SEED = [];
+
+function makeSeed() { return SEED.map(r => ({ ...r, id: uid() })); }
+
+function encodeRows(rowsToSave, updatedAt = Date.now()) {
+  return JSON.stringify({
+    version: STORAGE_VERSION,
+    updatedAt,
+    rows: rowsToSave.map(normalizeRow).filter(Boolean),
+  });
+}
+
+function parseRowsPayload(raw) {
+  try {
+    if (raw === null) {
+      return { rows: makeSeed(), updatedAt: 0, valid: true, empty: true, legacy: false };
+    }
+    const parsed = JSON.parse(raw);
+    const sourceRows = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.rows) ? parsed.rows : null;
+    if (!sourceRows) {
+      return { rows: makeSeed(), updatedAt: 0, valid: false, empty: false, legacy: false };
+    }
+
+    const seenIds = new Set();
+    const normalized = sourceRows.map((row) => {
+      const next = normalizeRow(row);
+      if (!next) return null;
+      if (seenIds.has(next.id)) next.id = uid();
+      seenIds.add(next.id);
+      return next;
+    }).filter(Boolean);
+
+    const rowsFromStorage = sourceRows.length ? (normalized.length ? normalized : makeSeed()) : [];
+    return {
+      rows: rowsFromStorage,
+      updatedAt: typeof parsed.updatedAt === 'number' && Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0,
+      valid: true,
+      empty: false,
+      legacy: Array.isArray(parsed),
+    };
+  } catch (e) {
+    console.warn('hopmax: failed to load saved data', e);
+    return { rows: makeSeed(), updatedAt: 0, valid: false, empty: false, legacy: false };
+  }
+}
+
+function parseRows(raw) {
+  return parseRowsPayload(raw).rows;
+}
+
+function rowMergeKey(row) {
+  const track = (row.track || '').trim().toLowerCase();
+  const label = (row.label || '').trim().toLowerCase();
+  const date = row.date || '';
+  if (track || label || date) return `${date}|${track}|${label}`;
+  return row.id;
+}
+
+function mergeRows(preferredRows, fallbackRows) {
+  const merged = new Map();
+  fallbackRows.forEach((row) => merged.set(rowMergeKey(row), { ...row }));
+  preferredRows.forEach((row) => merged.set(rowMergeKey(row), { ...row }));
+  return Array.from(merged.values());
+}
+
+function resolveRowsStorage(localRaw, hostRaw) {
+  const localState = parseRowsPayload(localRaw);
+  const hostState = parseRowsPayload(hostRaw);
+
+  if (localState.empty && hostState.empty) {
+    const rowsFromSeed = makeSeed();
+    return { rows: rowsFromSeed, raw: encodeRows(rowsFromSeed), source: 'seed' };
+  }
+  if (hostState.empty || !hostState.valid) {
+    return { rows: localState.rows, raw: encodeRows(localState.rows, localState.updatedAt || Date.now()), source: 'local' };
+  }
+  if (localState.empty || !localState.valid) {
+    return { rows: hostState.rows, raw: encodeRows(hostState.rows, hostState.updatedAt || Date.now()), source: 'host' };
+  }
+
+  if (!localState.legacy && !hostState.legacy && localState.updatedAt !== hostState.updatedAt) {
+    const newest = localState.updatedAt > hostState.updatedAt ? localState : hostState;
+    return { rows: newest.rows, raw: encodeRows(newest.rows, newest.updatedAt || Date.now()), source: newest === localState ? 'local' : 'host' };
+  }
+
+  const preferLocal = localState.updatedAt >= hostState.updatedAt || localState.rows.length >= hostState.rows.length;
+  const rowsFromMerge = preferLocal
+    ? mergeRows(localState.rows, hostState.rows)
+    : mergeRows(hostState.rows, localState.rows);
+
+  return { rows: rowsFromMerge, raw: encodeRows(rowsFromMerge), source: 'merged' };
+}
+
+async function load() {
+  const localRaw = readLocalStorage(KEY);
+  if (!hasHostStorage()) return parseRows(localRaw);
+
+  try {
+    const hostRaw = await window.storage.get(KEY);
+    const resolved = resolveRowsStorage(localRaw, typeof hostRaw === 'string' ? hostRaw : null);
+
+    if (resolved.raw !== localRaw) writeLocalStorage(KEY, resolved.raw);
+    if (resolved.raw !== hostRaw) {
+      await window.storage.set(KEY, resolved.raw);
+    }
+
+    return resolved.rows;
+  } catch (e) {
+    console.warn('hopmax: host storage unavailable', e);
+    return parseRows(localRaw);
+  }
+}
+
+function save() {
+  try {
+    const current = readLocalStorage(KEY);
+    const next = encodeRows(rows);
+    if (current && current !== next) writeLocalStorage(BACKUP_KEY, current);
+    writeStorage(KEY, next);
+  } catch(e) {
+    console.warn('hopmax: localStorage quota exceeded', e);
+  }
+}
+let rows = makeSeed();
+
+// — Undo state —
+let deletedRow = null;
+let deletedIndex = null;
+let toastTimer = null;
+
+// ── Date utils ────────────────────────────────────────────────────────────────
+const DAY_MS = 86400000;
+const MIN_GAP_DAYS = 7;
+const FREE_SLOT_COUNT = 3;
+const SUGGESTION_LIMIT_DAYS = 180;
+
+// Разбор даты для предотвращения багов с часовым поясом UTC
+function parseLocal(dateStr) {
+  if (!dateStr) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function isValidDateStr(dateStr) {
+  const x = parseLocal(dateStr);
+  return !!x && !Number.isNaN(x.getTime()) && x.getFullYear() === Number(dateStr.slice(0, 4)) && x.getMonth() === Number(dateStr.slice(5, 7)) - 1 && x.getDate() === Number(dateStr.slice(8, 10));
+}
+
+function toDayKey(dateStr) {
+  const x = parseLocal(dateStr);
+  if (!x || !isValidDateStr(dateStr)) return null;
+  return Math.trunc(Date.UTC(x.getFullYear(), x.getMonth(), x.getDate()) / DAY_MS);
+}
+
+function todayDayKey() {
+  const d = new Date();
+  return Math.trunc(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY_MS);
+}
+
+function isWeekendDay(dayKey) {
+  const wd = new Date(dayKey * DAY_MS).getUTCDay();
+  return wd === 0 || wd === 6; 
+}
+
+function isAllowedReleaseDate(dateStr) {
+  const dayKey = toDayKey(dateStr);
+  return Number.isInteger(dayKey) && !isWeekendDay(dayKey);
+}
+
+function fmt(d) { 
+  const x = parseLocal(d);
+  if (!x || isNaN(x) || !isValidDateStr(d)) return ''; 
+  return `${String(x.getDate()).padStart(2,'0')}.${String(x.getMonth()+1).padStart(2,'0')}.${x.getFullYear()}`; 
+}
+
+function fmtDay(dayKey) {
+  const d = new Date(dayKey * DAY_MS);
+  return `${String(d.getUTCDate()).padStart(2,'0')}.${String(d.getUTCMonth()+1).padStart(2,'0')}.${d.getUTCFullYear()}`;
+}
+
+function dayKeyToDateValue(dayKey) {
+  const d = new Date(dayKey * DAY_MS);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+function fmtSlotOption(dayKey, locale) {
+  const d = new Date(dayKey * DAY_MS);
+  const weekday = d.toLocaleDateString(locale || t().monthLocale, { weekday: 'short', timeZone: 'UTC' });
+  return `${fmtDay(dayKey)} · ${weekday}`;
+}
+
+function fmtMonthGroup(dayKey, locale) {
+  const d = new Date(dayKey * DAY_MS);
+  return d.toLocaleDateString(locale || t().monthLocale, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+function monthName(d, locale) {
+  const x = parseLocal(d);
+  if (!x || isNaN(x) || !isValidDateStr(d)) return '';
+  return x.toLocaleString(locale || t().monthLocale, { month: 'long' });
+}
+
+function normalizeStatus(status) {
+  return STATUS_VALUES.has(status) ? status : 'draft';
+}
+
+function normalizeRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const date = isValidDateStr(row.date) && isAllowedReleaseDate(row.date) ? row.date : '';
+  return {
+    id: typeof row.id === 'string' && row.id ? row.id : uid(),
+    month: date ? (typeof row.month === 'string' ? row.month : '') : '',
+    track: typeof row.track === 'string' ? row.track : '',
+    label: typeof row.label === 'string' ? row.label : '',
+    date,
+    status: normalizeStatus(row.status),
+  };
+}
+
+function statusLabel(status, dict = t()) {
+  if (status === 'released') return dict.statusReleased;
+  if (status === 'waiting') return dict.statusWaiting;
+  return dict.statusDraft;
+}
+
+function otherDates(excludeId) {
+  return rows
+    .filter(r => r.id !== excludeId && r.date)
+    .map(r => toDayKey(r.date))
+    .filter((dayKey) => Number.isInteger(dayKey));
+}
+function isFree(dayKey, others) {
+  if (isWeekendDay(dayKey)) return false;
+  return !others.some(otherDayKey => Math.abs(dayKey - otherDayKey) < MIN_GAP_DAYS);
+}
+function hasConflict(row) {
+  if (!row.date) return false;
+  const dayKey = toDayKey(row.date);
+  return Number.isInteger(dayKey) && otherDates(row.id).some(otherDayKey => Math.abs(dayKey - otherDayKey) < MIN_GAP_DAYS);
+}
+function nearestBefore(startDayKey, excludeId) {
+  const others = otherDates(excludeId);
+  const today = todayDayKey();
+  const windowEnd = startDayKey - MIN_GAP_DAYS;
+  if (windowEnd < today) return null;
+  let dayKey = windowEnd;
+  while (dayKey >= today) {
+    if (isFree(dayKey, others)) return dayKey;
+    dayKey -= 1;
+  }
+  return null;
+}
+function nearestAfter(startDayKey, excludeId) {
+  const others = otherDates(excludeId);
+  const today = todayDayKey();
+  let dayKey = Math.max(today, startDayKey + MIN_GAP_DAYS);
+  const limit = dayKey + SUGGESTION_LIMIT_DAYS;
+  while (dayKey <= limit) {
+    if (isFree(dayKey, others)) return dayKey;
+    dayKey += 1;
+  }
+  return null;
+}
+
+function pitchStartDayKey() {
+  return todayDayKey() + MIN_GAP_DAYS;
+}
+
+function pitchSafeSlots(excludeId, count = FREE_SLOT_COUNT) {
+  const others = otherDates(excludeId);
+  const start = pitchStartDayKey();
+  const limit = start + SUGGESTION_LIMIT_DAYS;
+  const slots = [];
+
+  for (let dayKey = start; dayKey <= limit && slots.length < count; dayKey += 1) {
+    if (isFree(dayKey, others)) slots.push(dayKey);
+  }
+
+  return slots;
+}
+
+function updateFreeDateSelect() {
+  const dict = t();
+  const select = document.getElementById('freeDateSelect');
+  const nextLabel = document.getElementById('nextFreeLabel');
+  if (!select) return;
+  const currentValue = select.value;
+  select.innerHTML = '';
+  select.disabled = false;
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = dict.pickFreeDate;
+  select.appendChild(placeholder);
+
+  const slots = pitchSafeSlots(null, Number.POSITIVE_INFINITY);
+  if (!slots.length) {
+    placeholder.textContent = dict.noFreeDates;
+    if (nextLabel) nextLabel.textContent = dict.noFreeDates;
+    select.disabled = true;
+    return;
+  }
+
+  if (nextLabel) nextLabel.textContent = `${dict.nextFree}: ${fmtSlotOption(slots[0], dict.monthLocale)}`;
+
+  let groupLabel = '';
+  let group = null;
+  slots.forEach((dayKey) => {
+    const value = dayKeyToDateValue(dayKey);
+    const nextGroupLabel = fmtMonthGroup(dayKey, dict.monthLocale);
+    if (nextGroupLabel !== groupLabel) {
+      groupLabel = nextGroupLabel;
+      group = document.createElement('optgroup');
+      group.label = groupLabel;
+      select.appendChild(group);
+    }
+
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = fmtSlotOption(dayKey, dict.monthLocale);
+    group.appendChild(option);
+  });
+
+  if (slots.some((dayKey) => dayKeyToDateValue(dayKey) === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function syncAutoStatuses() {
+  const today = todayDayKey();
+  let changed = false;
+
+  rows.forEach((row) => {
+    if (row.status !== 'waiting' || !row.date) return;
+    const dayKey = toDayKey(row.date);
+    if (Number.isInteger(dayKey) && dayKey <= today) {
+      row.status = 'released';
+      changed = true;
+    }
+  });
+
+  if (changed) save();
+}
+
+function sortedRows() {
+  return [...rows].sort((a, b) => {
+    if (!a.date && !b.date) return 0;
+    if (!a.date) return 1;
+    if (!b.date) return -1;
+    return toDayKey(a.date) - toDayKey(b.date);
+  });
+}
+
+function visibleRows(sorted) {
+  if (currentFilter === 'waiting') return sorted.filter((row) => row.status === 'waiting');
+  if (currentFilter === 'released') return sorted.filter((row) => row.status === 'released');
+  if (currentFilter === 'conflict') return sorted.filter((row) => hasConflict(row));
+  return sorted;
+}
+
+function statusClass(status) {
+  const normalized = normalizeStatus(status);
+  return normalized === 'released' ? 's-released' : normalized === 'waiting' ? 's-waiting' : 's-draft';
+}
+
+function updateStats(sorted) {
+  const total    = sorted.length;
+  const waiting  = sorted.filter(r => r.status === 'waiting').length;
+  const conflict = sorted.filter(r => hasConflict(r)).length;
+  const s = t();
+
+  document.getElementById('statTotal').textContent    = s.statTotal(total);
+  document.getElementById('statWaiting').textContent  = s.statWaiting(waiting);
+  document.getElementById('statConflict').textContent = s.statConflict(conflict);
+
+  document.getElementById('statWaiting').style.display  = waiting  > 0 ? '' : 'none';
+  document.getElementById('statConflict').style.display = conflict > 0 ? '' : 'none';
+}
+
+function render() {
+  syncAutoStatuses();
+  const today = todayDayKey();
+  const s = t();
+  document.getElementById('todayLabel').textContent = fmtDay(today);
+
+  // Сохраняем фокус перед ререндером
+  let activeId = null;
+  let activeCol = null;
+  if (document.activeElement && document.activeElement.classList.contains('inp')) {
+    const tr = document.activeElement.closest('tr');
+    if (tr) {
+      activeId = tr.dataset.id;
+      activeCol = document.activeElement.dataset.field || 'date';
+    }
+  }
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  const sorted = sortedRows();
+  const visible = visibleRows(sorted);
+
+  updateStats(sorted);
+  updateFreeDateSelect();
+
+  if (!visible.length) {
+    const emptyTr = document.createElement('tr');
+    emptyTr.className = 'empty-row';
+    const td = document.createElement('td');
+    td.colSpan = 8;
+    td.textContent = rows.length ? s.noFilterResults : s.noReleases;
+    emptyTr.appendChild(td);
+    tbody.appendChild(emptyTr);
+    return;
+  }
+
+  visible.forEach(row => {
+    const month = monthName(row.date, s.monthLocale) || row.month || '';
+    const status = normalizeStatus(row.status);
+    const sc = statusClass(status);
+    const dayKey = toDayKey(row.date);
+    const isPast = Number.isInteger(dayKey) && dayKey < today;
+    const conflict = hasConflict(row);
+
+    let beforeCell, afterCell;
+    if (status === 'released' || !Number.isInteger(dayKey)) {
+      beforeCell = document.createElement('span');
+      beforeCell.className = 'comp-empty';
+      beforeCell.textContent = '—';
+
+      afterCell = document.createElement('span');
+      afterCell.className = 'comp-empty';
+      afterCell.textContent = '—';
+    } else {
+      const bDayKey = nearestBefore(dayKey, row.id);
+      const aDayKey = nearestAfter(dayKey, row.id);
+
+      beforeCell = document.createElement('span');
+      if (bDayKey !== null) {
+        beforeCell.style.cssText = 'color:var(--before);font-size:13px';
+        beforeCell.textContent = fmtDay(bDayKey);
+      } else {
+        beforeCell.className = 'comp-empty';
+        beforeCell.textContent = s.noSlots;
+      }
+
+      afterCell = document.createElement('span');
+      if (aDayKey !== null) {
+        afterCell.style.cssText = 'color:var(--after);font-size:13px';
+        afterCell.textContent = fmtDay(aDayKey);
+      } else {
+        afterCell.className = 'comp-empty';
+        afterCell.textContent = s.noSlots;
+      }
+    }
+
+    const tr = document.createElement('tr');
+    tr.dataset.id = row.id;
+    tr.classList.add(`status-${status}`);
+    if (isPast)    tr.classList.add('is-past');
+    if (conflict)  tr.classList.add('is-conflict');
+
+    const tdMonth = document.createElement('td');
+    tdMonth.className = 'col-month';
+    tdMonth.textContent = month;
+
+    const tdTrack = document.createElement('td');
+    const inpTrack = document.createElement('input');
+    inpTrack.className = 'inp';
+    inpTrack.setAttribute('aria-label', s.colTrack);
+    inpTrack.placeholder = s.placeholderTrack;
+    inpTrack.dataset.field = 'track';
+    inpTrack.value = row.track || '';
+    tdTrack.appendChild(inpTrack);
+
+    const tdLabel = document.createElement('td');
+    const inpLabel = document.createElement('input');
+    inpLabel.className = 'inp';
+    inpLabel.setAttribute('aria-label', s.colLabel);
+    inpLabel.placeholder = s.placeholderLabel;
+    inpLabel.dataset.field = 'label';
+    inpLabel.value = row.label || '';
+    tdLabel.appendChild(inpLabel);
+
+    const tdDate = document.createElement('td');
+    const inpDate = document.createElement('input');
+    inpDate.className = 'inp';
+    inpDate.setAttribute('aria-label', s.colDate);
+    inpDate.type = 'date';
+    inpDate.value = row.date || '';
+    tdDate.appendChild(inpDate);
+
+    const tdStatus = document.createElement('td');
+    const sel = document.createElement('select');
+    sel.className = 'status-sel ' + sc;
+    sel.setAttribute('aria-label', s.colStatus);
+    [
+      { val: 'released', label: statusLabel('released', s) },
+      { val: 'waiting',  label: statusLabel('waiting', s)  },
+      { val: 'draft',    label: statusLabel('draft', s)    },
+    ].forEach(({ val, label }) => {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (row.status === val) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    tdStatus.appendChild(sel);
+
+    const tdBefore = document.createElement('td');
+    tdBefore.className = 'col-before';
+    tdBefore.appendChild(beforeCell);
+
+    const tdAfter = document.createElement('td');
+    tdAfter.className = 'col-after';
+    tdAfter.appendChild(afterCell);
+
+    const tdDel = document.createElement('td');
+    const btnDel = document.createElement('button');
+    btnDel.type = 'button';
+    btnDel.className = 'del';
+    btnDel.setAttribute('aria-label', s.deleteRelease(row.track || row.label || t().untitled));
+    btnDel.title = s.deleteRelease(row.track || row.label || t().untitled);
+    btnDel.textContent = '×';
+    btnDel.dataset.action = 'delete';
+    tdDel.appendChild(btnDel);
+
+    tr.append(tdMonth, tdTrack, tdLabel, tdDate, tdStatus, tdBefore, tdAfter, tdDel);
+    tbody.appendChild(tr);
+  });
+
+  // Возвращаем фокус
+  if (activeId) {
+    const tr = document.querySelector(`tr[data-id="${activeId}"]`);
+    if (tr) {
+      let el = activeCol === 'date' ? tr.querySelector('input[type="date"]') : tr.querySelector(`input[data-field="${activeCol}"]`);
+      if (el) {
+        const val = el.value;
+        el.focus();
+        if (el.type !== 'date') {
+          el.value = '';
+          el.value = val;
+        }
+      }
+    }
+  }
+}
+
+function flushPendingSaves() {
+  save();
+}
+
+function clearUndoState() {
+  clearTimeout(toastTimer);
+  toastTimer = null;
+  deletedRow = null;
+  deletedIndex = null;
+}
+
+document.getElementById('tbody').addEventListener('input', (e) => {
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  const id = tr.dataset.id;
+
+  if (e.target.dataset.field === 'track' || e.target.dataset.field === 'label') {
+    const r = rows.find(r => r.id === id);
+    if (!r) return;
+    r[e.target.dataset.field] = e.target.value;
+    save();
+  }
+
+  if (e.target.type === 'date') {
+    const r = rows.find(r => r.id === id);
+    if (!r) return;
+    const nextDate = e.target.value;
+    if (nextDate && isValidDateStr(nextDate) && !isAllowedReleaseDate(nextDate)) {
+      e.target.setCustomValidity(t().weekendBlocked);
+      e.target.reportValidity();
+      e.target.value = r.date || '';
+      showToast(t().weekendBlocked, { undo: false });
+      return;
+    }
+    e.target.setCustomValidity('');
+    r.date = isValidDateStr(nextDate) ? nextDate : '';
+    r.month = monthName(r.date);
+    save();
+    render();
+  }
+});
+
+document.getElementById('tbody').addEventListener('change', (e) => {
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr || e.target.tagName !== 'SELECT') return;
+  const id = tr.dataset.id;
+  const r = rows.find(r => r.id === id);
+  if (!r) return;
+  r.status = e.target.value;
+  save();
+  render();
+});
+
+document.getElementById('tbody').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action="delete"]');
+  if (!btn) return;
+  const tr = btn.closest('tr[data-id]');
+  if (!tr) return;
+  delRow(tr.dataset.id);
+});
+
+document.getElementById('tbody').addEventListener('focusout', (e) => {
+  if (e.target.dataset.field !== 'track' && e.target.dataset.field !== 'label') return;
+  flushPendingSaves();
+});
+
+// ── Undo delete ───────────────────────────────────────────────────────────────
+function delRow(id) {
+  const idx = rows.findIndex(r => r.id === id);
+  if (idx === -1) return;
+  deletedRow = { ...rows[idx] };
+  deletedIndex = idx;
+  rows.splice(idx, 1);
+  save();
+  render();
+  showToast(t().deleted(deletedRow.track || t().untitled));
+}
+
+function undoDelete() {
+  if (!deletedRow) return;
+  rows.splice(deletedIndex, 0, deletedRow);
+  deletedRow = null;
+  deletedIndex = null;
+  save();
+  render();
+  hideToast();
+}
+
+function showToast(msg, options = {}) {
+  const { undo = true } = options;
+  clearTimeout(toastTimer);
+  const toast = document.getElementById('undoToast');
+  document.getElementById('undoMsg').textContent = msg;
+  toast.classList.toggle('is-passive', !undo);
+  toast.classList.add('show');
+  toastTimer = setTimeout(hideToast, 4000);
+}
+
+function hideToast() {
+  const toast = document.getElementById('undoToast');
+  toast.classList.remove('show');
+  toast.classList.remove('is-passive');
+  clearUndoState();
+}
+
+function addRow() {
+  const newId = uid();
+  rows.push({ id: newId, month: '', track: '', label: '', date: '', status: 'waiting' });
+  save();
+  render();
+  const tr = document.querySelector(`tr[data-id="${newId}"]`);
+  if (tr) tr.querySelector('.inp:not([type="date"])')?.focus();
+}
+
+function resetToSeed() {
+  if (!confirm(t().resetConfirm)) return;
+  flushPendingSaves();
+  rows = makeSeed();
+  hideToast();
+  save();
+  render();
+}
+
+function exportCSV() {
+  const s = t();
+  const escapeCSV = (value) => `"${String(value || '').replace(/"/g, '""')}"`;
+  const headers = [s.colMonth, s.colTrack, s.colLabel, s.colDate, s.colStatus, s.colBefore, s.colAfter];
+  const csvRows = sortedRows().map(row => {
+    const dayKey = toDayKey(row.date);
+    const bDayKey = Number.isInteger(dayKey) ? nearestBefore(dayKey, row.id) : null;
+    const aDayKey = Number.isInteger(dayKey) ? nearestAfter(dayKey, row.id) : null;
+    const month = monthName(row.date, s.monthLocale) || row.month || '';
+    return [month, row.track, row.label, fmt(row.date), statusLabel(row.status, s), bDayKey !== null ? fmtDay(bDayKey) : '', aDayKey !== null ? fmtDay(aDayKey) : '']
+      .map(escapeCSV).join(',');
+  });
+  const csv = '\uFEFF' + [headers.map(escapeCSV).join(','), ...csvRows].join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'hopmax-releases.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// ── Wire up static buttons ────────────────────────────────────────────────────
+document.getElementById('btnAdd').addEventListener('click', addRow);
+document.getElementById('btnReset').addEventListener('click', resetToSeed);
+document.getElementById('btnExportCSV').addEventListener('click', exportCSV);
+document.getElementById('undoBtn').addEventListener('click', undoDelete);
+document.getElementById('langSelect').addEventListener('change', (e) => setLang(e.target.value));
+document.querySelector('.view-tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-filter]');
+  if (!btn) return;
+  setFilter(btn.dataset.filter);
+});
+window.addEventListener('beforeunload', flushPendingSaves);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushPendingSaves();
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  lang = normalizeLang(await readStorage(LANG_KEY));
+  currentFilter = DEFAULT_FILTER;
+  rows = await load();
+  document.getElementById('langSelect').value = lang;
+  applyLang();
+  render();
+}
+
+init().catch((e) => {
+  console.warn('hopmax: init fallback', e);
+  document.getElementById('langSelect').value = lang;
+  applyLang();
+  render();
+});
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
+  const canRegister = window.location.protocol === 'https:' || isLocalhost;
+  if (!canRegister) return;
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js').catch((error) => {
+      console.warn('hopmax: service worker registration failed', error);
+    });
+  });
+}
+
+registerServiceWorker();
+</script>
+</body>
+</html>
