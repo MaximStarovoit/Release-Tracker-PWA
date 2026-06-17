@@ -468,20 +468,190 @@
     }
 
     @media (max-width: 640px) {
+      body { overflow-x: hidden; padding-bottom: env(safe-area-inset-bottom); }
+      header { padding: calc(18px + env(safe-area-inset-top)) 20px 14px; gap: 18px; }
+      header > div:first-child { width: 100%; }
+      .header-right {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 10px;
+        width: 100%;
+      }
       .lang-switcher,
-      .free-date-control,
       .today-badge,
       .stats,
-      .header-right > .btn { flex: 1 1 auto; }
-      .free-date-control { justify-content: space-between; flex-wrap: wrap; }
+      .header-right > .btn {
+        min-width: 0;
+        width: 100%;
+      }
+      .lang-select {
+        width: 100%;
+        min-height: 36px;
+      }
+      .today-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 5px 8px;
+        text-align: center;
+      }
+      .free-date-control {
+        grid-column: 1 / -1;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        width: 100%;
+      }
       .free-date-copy { min-width: 100%; }
-      .free-date-control .slot-select { max-width: none; }
-      .view-tabs { display: flex; overflow-x: auto; }
-      .view-tab { flex: 1 0 auto; }
+      .free-date-control .slot-select {
+        max-width: none;
+        min-height: 36px;
+      }
+      .stats {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+      }
+      .stat-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 28px;
+        text-align: center;
+      }
       .stats { flex-wrap: wrap; }
-      .header-right > .btn { justify-content: center; }
-      table { min-width: 780px; }
-      td { height: 46px; }
+      .header-right > .btn {
+        justify-content: center;
+        min-height: 36px;
+        padding: 8px 10px;
+      }
+      #btnAdd { grid-column: 1 / -1; }
+      .hint {
+        display: grid;
+        grid-template-columns: 1fr;
+        margin: 14px 20px 12px;
+        padding: 12px;
+        gap: 10px;
+      }
+      .hint-item { align-items: flex-start; line-height: 1.35; }
+      .dot { margin-top: 4px; }
+      .view-tabs {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        width: calc(100% - 40px);
+        margin: 0 20px 14px;
+        overflow: hidden;
+      }
+      .view-tab {
+        min-width: 0;
+        padding: 8px 5px;
+        font-size: 10px;
+        text-align: center;
+      }
+      .wrap {
+        overflow: visible;
+        padding: 0 20px 36px;
+      }
+      table,
+      thead,
+      tbody {
+        display: block;
+        width: 100%;
+        min-width: 0;
+      }
+      thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+      }
+      tbody {
+        display: grid;
+        gap: 10px;
+      }
+      tbody tr {
+        position: relative;
+        display: grid;
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgba(24, 22, 17, 0.82);
+        overflow: hidden;
+      }
+      tbody tr:hover { background: rgba(33, 31, 25, 0.86); }
+      tbody tr.is-conflict td:first-child { border-left: 0; }
+      tbody tr.is-conflict { box-shadow: inset 3px 0 0 var(--danger); }
+      td {
+        display: grid;
+        grid-template-columns: minmax(74px, 30%) minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        height: auto;
+        min-height: 42px;
+        padding: 7px 12px;
+        border: 0;
+      }
+      td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        line-height: 1.2;
+        text-transform: uppercase;
+      }
+      td.col-month {
+        min-height: 36px;
+        padding-right: 44px;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+      }
+      td.col-before,
+      td.col-after {
+        background: transparent;
+        border-top: 1px solid rgba(42, 39, 32, 0.62);
+      }
+      tr:hover td.col-before,
+      tr:hover td.col-after { background: transparent; }
+      .inp,
+      .status-sel {
+        min-height: 32px;
+        min-width: 0;
+      }
+      .inp:focus {
+        margin: 0;
+        width: 100%;
+      }
+      .col-actions {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        display: flex;
+        justify-content: flex-end;
+        min-height: 0;
+        padding: 0;
+      }
+      .col-actions::before { content: none; }
+      .del {
+        width: 36px;
+        height: 34px;
+        padding: 0;
+      }
+      .empty-row {
+        background: rgba(24, 22, 17, 0.76);
+      }
+      .empty-row td {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 124px;
+        padding: 28px 18px;
+        text-align: center;
+        white-space: normal;
+      }
+      .empty-row td::before { content: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -1408,9 +1578,11 @@ function render() {
 
     const tdMonth = document.createElement('td');
     tdMonth.className = 'col-month';
-    tdMonth.textContent = month;
+    tdMonth.dataset.label = s.colMonth;
+    tdMonth.textContent = month || '—';
 
     const tdTrack = document.createElement('td');
+    tdTrack.dataset.label = s.colTrack;
     const inpTrack = document.createElement('input');
     inpTrack.className = 'inp';
     inpTrack.setAttribute('aria-label', s.colTrack);
@@ -1420,6 +1592,7 @@ function render() {
     tdTrack.appendChild(inpTrack);
 
     const tdLabel = document.createElement('td');
+    tdLabel.dataset.label = s.colLabel;
     const inpLabel = document.createElement('input');
     inpLabel.className = 'inp';
     inpLabel.setAttribute('aria-label', s.colLabel);
@@ -1429,6 +1602,7 @@ function render() {
     tdLabel.appendChild(inpLabel);
 
     const tdDate = document.createElement('td');
+    tdDate.dataset.label = s.colDate;
     const inpDate = document.createElement('input');
     inpDate.className = 'inp';
     inpDate.setAttribute('aria-label', s.colDate);
@@ -1437,6 +1611,7 @@ function render() {
     tdDate.appendChild(inpDate);
 
     const tdStatus = document.createElement('td');
+    tdStatus.dataset.label = s.colStatus;
     const sel = document.createElement('select');
     sel.className = 'status-sel ' + sc;
     sel.setAttribute('aria-label', s.colStatus);
@@ -1455,13 +1630,16 @@ function render() {
 
     const tdBefore = document.createElement('td');
     tdBefore.className = 'col-before';
+    tdBefore.dataset.label = s.colBefore;
     tdBefore.appendChild(beforeCell);
 
     const tdAfter = document.createElement('td');
     tdAfter.className = 'col-after';
+    tdAfter.dataset.label = s.colAfter;
     tdAfter.appendChild(afterCell);
 
     const tdDel = document.createElement('td');
+    tdDel.className = 'col-actions';
     const btnDel = document.createElement('button');
     btnDel.type = 'button';
     btnDel.className = 'del';
