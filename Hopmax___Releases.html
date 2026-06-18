@@ -340,7 +340,8 @@
     .comp-blocked { color: var(--danger); font-size: 11px; opacity: 0.7; }
     .slot-select {
       width: 100%;
-      max-width: 230px;
+      max-width: 250px;
+      flex: 1 1 220px;
       background: rgba(88,166,214,0.08);
       color: var(--open);
       border: 1px solid rgba(88,166,214,0.24);
@@ -396,7 +397,7 @@
       text-transform: uppercase;
       white-space: nowrap;
     }
-    .free-date-copy { display: flex; flex-direction: column; gap: 1px; min-width: 166px; }
+    .free-date-copy { display: flex; flex-direction: column; gap: 1px; min-width: 206px; }
     .next-free { color: var(--open); font-size: 10px; line-height: 1.2; white-space: nowrap; }
 
     .view-tabs {
@@ -475,15 +476,15 @@
         padding-bottom: env(safe-area-inset-bottom);
         overscroll-behavior-y: none;
       }
-      header { padding: calc(14px + env(safe-area-inset-top)) 14px 12px; gap: 14px; }
+      header { padding: calc(10px + env(safe-area-inset-top)) 12px 10px; gap: 10px; }
       header > div:first-child { width: 100%; }
       .vinyl-wrap,
-      .vinyl { width: 30px; height: 30px; }
-      .logo { font-size: 20px; }
+      .vinyl { width: 28px; height: 28px; }
+      .logo { font-size: 19px; }
       .header-right {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: 8px;
+        gap: 6px;
         width: 100%;
       }
       .lang-switcher,
@@ -495,14 +496,14 @@
       }
       .lang-select {
         width: 100%;
-        min-height: 34px;
+        min-height: 32px;
         font-size: 16px;
       }
       .today-badge {
         display: flex;
         align-items: center;
         justify-content: center;
-        min-height: 34px;
+        min-height: 32px;
         padding: 5px 8px;
         font-size: 10px;
         text-align: center;
@@ -512,51 +513,51 @@
         justify-content: space-between;
         flex-wrap: wrap;
         width: 100%;
-        padding: 6px 8px;
+        padding: 5px 8px;
       }
       .free-date-copy { min-width: 100%; }
       .free-date-control label,
       .next-free { font-size: 9px; }
       .free-date-control .slot-select {
         max-width: none;
-        min-height: 34px;
+        min-height: 32px;
         font-size: 16px;
       }
       .stats {
         grid-column: 1 / -1;
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
       }
       .stat-badge {
         display: flex;
         align-items: center;
         justify-content: center;
-        min-height: 30px;
-        font-size: 10px;
+        min-height: 28px;
+        font-size: 9px;
         text-align: center;
       }
       .stats { flex-wrap: wrap; }
       .header-right > .btn {
         justify-content: center;
-        min-height: 34px;
-        padding: 8px 10px;
+        min-height: 32px;
+        padding: 7px 9px;
       }
       #btnAdd { grid-column: 1 / -1; }
       .hint {
         display: grid;
-        grid-template-columns: 1fr;
-        margin: 12px 14px 10px;
-        padding: 10px 12px;
-        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin: 10px 12px 8px;
+        padding: 8px 10px;
+        gap: 6px 10px;
       }
-      .hint-item { align-items: flex-start; line-height: 1.3; font-size: 10px; }
-      .dot { margin-top: 4px; }
+      .hint-item { align-items: flex-start; line-height: 1.25; font-size: 8px; min-width: 0; }
+      .dot { margin-top: 3px; }
       .view-tabs {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        width: calc(100% - 28px);
-        margin: 0 14px 10px;
+        width: calc(100% - 24px);
+        margin: 0 12px 8px;
         overflow: hidden;
       }
       .view-tab {
@@ -567,7 +568,7 @@
       }
       .wrap {
         overflow: visible;
-        padding: 0 14px 28px;
+        padding: 0 12px 28px;
       }
       table,
       thead,
@@ -585,7 +586,7 @@
       }
       tbody {
         display: grid;
-        gap: 8px;
+        gap: 7px;
       }
       tbody tr {
         position: relative;
@@ -602,27 +603,27 @@
       tbody tr.is-conflict { box-shadow: inset 3px 0 0 var(--danger); }
       td {
         display: grid;
-        grid-template-columns: 104px minmax(0, 1fr);
+        grid-template-columns: 92px minmax(0, 1fr);
         align-items: center;
-        gap: 7px;
+        gap: 6px;
         height: auto;
-        min-height: 28px;
-        padding: 2px 10px;
+        min-height: 24px;
+        padding: 1px 9px;
         border: 0;
       }
       td::before {
         content: attr(data-label);
         color: var(--muted);
-        font-size: 8px;
+        font-size: 7.5px;
         letter-spacing: 0.08em;
         line-height: 1.2;
         text-transform: uppercase;
       }
       td.col-month {
-        min-height: 28px;
+        min-height: 25px;
         padding-right: 40px;
         border-bottom: 1px solid var(--border);
-        font-size: 11px;
+        font-size: 10px;
       }
       td.col-before,
       td.col-after {
@@ -633,16 +634,21 @@
       tr:hover td.col-after { background: transparent; }
       .inp,
       .status-sel {
-        min-height: 25px;
+        min-height: 23px;
         min-width: 0;
         font-size: 16px;
         line-height: 1.2;
-        transform: scale(0.875);
+        transform: scale(0.835);
         transform-origin: left center;
-        width: 114.2857%;
+        width: 119.7605%;
       }
+      input[type="date"].inp { text-align: left; }
       .status-sel {
-        padding: 3px 9px;
+        padding: 2px 8px;
+      }
+      .col-before span,
+      .col-after span {
+        font-size: 12px !important;
       }
       .inp:focus {
         margin: 0;
@@ -1342,6 +1348,12 @@ function monthName(d, locale) {
   return x.toLocaleString(locale || t().monthLocale, { month: 'long' });
 }
 
+function scheduledStatusForDate(dateStr) {
+  const dayKey = toDayKey(dateStr);
+  if (!Number.isInteger(dayKey)) return 'waiting';
+  return dayKey <= todayDayKey() ? 'released' : 'waiting';
+}
+
 function normalizeStatus(status) {
   return STATUS_VALUES.has(status) ? status : 'draft';
 }
@@ -1349,13 +1361,14 @@ function normalizeStatus(status) {
 function normalizeRow(row) {
   if (!row || typeof row !== 'object') return null;
   const date = isValidDateStr(row.date) && isAllowedReleaseDate(row.date) ? row.date : '';
+  const status = normalizeStatus(row.status);
   return {
     id: typeof row.id === 'string' && row.id ? row.id : uid(),
     month: date ? (typeof row.month === 'string' ? row.month : '') : '',
     track: typeof row.track === 'string' ? row.track : '',
     label: typeof row.label === 'string' ? row.label : '',
     date,
-    status: normalizeStatus(row.status),
+    status: date && status !== 'draft' ? scheduledStatusForDate(date) : status,
   };
 }
 
@@ -1469,14 +1482,13 @@ function updateFreeDateSelect() {
 }
 
 function syncAutoStatuses() {
-  const today = todayDayKey();
   let changed = false;
 
   rows.forEach((row) => {
-    if (row.status !== 'waiting' || !row.date) return;
-    const dayKey = toDayKey(row.date);
-    if (Number.isInteger(dayKey) && dayKey <= today) {
-      row.status = 'released';
+    if (!row.date || row.status === 'draft') return;
+    const nextStatus = scheduledStatusForDate(row.date);
+    if (row.status !== nextStatus) {
+      row.status = nextStatus;
       changed = true;
     }
   });
@@ -1732,6 +1744,11 @@ document.getElementById('tbody').addEventListener('input', (e) => {
     e.target.setCustomValidity('');
     r.date = isValidDateStr(nextDate) ? nextDate : '';
     r.month = monthName(r.date);
+    if (r.date) {
+      r.status = scheduledStatusForDate(r.date);
+    } else if (r.status === 'released') {
+      r.status = 'waiting';
+    }
     save();
     render();
   }
@@ -1802,7 +1819,17 @@ function hideToast() {
 
 function addRow() {
   const newId = uid();
-  rows.push({ id: newId, month: '', track: '', label: '', date: '', status: 'waiting' });
+  const select = document.getElementById('freeDateSelect');
+  const selectedDate = select && isValidDateStr(select.value) ? select.value : '';
+  rows.push({
+    id: newId,
+    month: monthName(selectedDate),
+    track: '',
+    label: '',
+    date: selectedDate,
+    status: selectedDate ? scheduledStatusForDate(selectedDate) : 'waiting',
+  });
+  if (select) select.value = '';
   save();
   render();
   const tr = document.querySelector(`tr[data-id="${newId}"]`);
