@@ -330,6 +330,8 @@
     .inp:focus { background: var(--surface2); border-radius: 4px; padding: 3px 8px; margin: 0 -8px; width: calc(100% + 16px); box-shadow: 0 0 0 1px var(--border-light); cursor: text; }
     .inp::placeholder { color: var(--border-light); font-style: italic; }
     input[type="date"].inp::-webkit-calendar-picker-indicator { filter: invert(0.35); cursor: pointer; }
+    .date-field { position: relative; width: 100%; min-width: 0; }
+    .date-display { display: none; font-family: 'DM Mono', monospace; }
 
     .status-sel { appearance: none; border: none; font-family: 'DM Mono', monospace; font-size: 11px; font-weight: 500; padding: 4px 10px; border-radius: 4px; cursor: pointer; outline: none; letter-spacing: 0.03em; }
     .s-released { background: rgba(45,158,107,0.15); color: #2d9e6b; border: 1px solid rgba(45,158,107,0.3); }
@@ -642,7 +644,47 @@
         transform-origin: left center;
         width: 119.7605%;
       }
-      input[type="date"].inp { text-align: left; }
+      .date-field {
+        display: flex;
+        align-items: center;
+        min-height: 23px;
+      }
+      .date-display {
+        display: block;
+        width: 100%;
+        color: #fff7e8;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      .date-display.is-empty {
+        color: var(--border-light);
+        font-style: italic;
+        font-weight: 400;
+      }
+      .date-field input[type="date"].inp {
+        position: absolute;
+        inset: -10px 0;
+        width: 100%;
+        height: 44px;
+        min-height: 44px;
+        margin: 0;
+        padding: 0;
+        opacity: 0;
+        transform: none;
+        appearance: none;
+        -webkit-appearance: none;
+      }
+      .date-field input[type="date"].inp:focus {
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+      .date-field:focus-within .date-display { color: #fff; }
       .status-sel {
         padding: 2px 8px;
       }
@@ -1639,13 +1681,20 @@ function render() {
     tdLabel.appendChild(inpLabel);
 
     const tdDate = document.createElement('td');
+    tdDate.className = 'col-date';
     tdDate.dataset.label = s.colDate;
+    const dateField = document.createElement('div');
+    dateField.className = 'date-field';
+    const dateDisplay = document.createElement('span');
+    dateDisplay.className = 'date-display' + (row.date ? '' : ' is-empty');
+    dateDisplay.textContent = row.date ? fmt(row.date) : '—';
     const inpDate = document.createElement('input');
     inpDate.className = 'inp';
     inpDate.setAttribute('aria-label', s.colDate);
     inpDate.type = 'date';
     inpDate.value = row.date || '';
-    tdDate.appendChild(inpDate);
+    dateField.append(dateDisplay, inpDate);
+    tdDate.appendChild(dateField);
 
     const tdStatus = document.createElement('td');
     tdStatus.dataset.label = s.colStatus;
@@ -1899,7 +1948,7 @@ init().catch((e) => {
   render();
 });
 
-const APP_VERSION = '2026-06-18-2';
+const APP_VERSION = '2026-06-18-3';
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
