@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hopmax-releases-pwa-v4';
+const CACHE_NAME = 'hopmax-releases-pwa-v5';
 const APP_SHELL = [
   './',
   './index.html',

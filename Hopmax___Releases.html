@@ -1899,16 +1899,34 @@ init().catch((e) => {
   render();
 });
 
+const APP_VERSION = '2026-06-18-2';
+
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname);
   const canRegister = window.location.protocol === 'https:' || isLocalhost;
   if (!canRegister) return;
 
+  const reloadKey = `hopmax_sw_reload_${APP_VERSION}`;
+  let reloadScheduled = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadScheduled || sessionStorage.getItem(reloadKey)) return;
+    reloadScheduled = true;
+    sessionStorage.setItem(reloadKey, '1');
+    window.location.reload();
+  });
+
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./service-worker.js').catch((error) => {
-      console.warn('hopmax: service worker registration failed', error);
-    });
+    navigator.serviceWorker.register(`./service-worker.js?v=${APP_VERSION}`, { updateViaCache: 'none' })
+      .then((registration) => {
+        registration.update().catch(() => {});
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') registration.update().catch(() => {});
+        });
+      })
+      .catch((error) => {
+        console.warn('hopmax: service worker registration failed', error);
+      });
   });
 }
 
